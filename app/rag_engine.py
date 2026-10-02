@@ -332,28 +332,22 @@ class RAGEngine:
             if prompts.NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="documents", sources=_strip_snippets(hits))
 
-        # 2) Nothing usable in the files: web only if the question actually needs external/live knowledge.
-        if self.settings.web_search_enabled and await self._needs_web(question):
-            results = await asyncio.to_thread(self.web.search, question)
-            if results:
-                text = await self.llm.chat(
-                    prompts.WEB_SYSTEM_PROMPT,
-                    prompts.WEB_USER_TEMPLATE.format(context=_format_context(results, prompts.WEB_LABEL), question=question),
-                    temperature=temperature,
-                )
-                if prompts.WEB_NOT_FOUND_MARKER not in normalize(text):
-                    return Answer(answer=text, source="web", sources=_strip_snippets(results))
-            return Answer(answer=prompts.WEB_NOT_FOUND_ANSWER, source="none")
+        if not self.settings.web_search_enabled:
+            return Answer(answer=prompts.NOT_FOUND_ANSWER, source="none")
 
-        # 3) Internal question with no supporting documents: refuse, never guess.
-        return Answer(answer=prompts.NOT_FOUND_ANSWER, source="none")
+        # 2) Nothing usable in the files: always search the web; the model decides if the results answer it.
+        results = await asyncio.to_thread(self.web.search, question)
+        if results:
+            text = await self.llm.chat(
+                prompts.WEB_SYSTEM_PROMPT,
+                prompts.WEB_USER_TEMPLATE.format(context=_format_context(results, prompts.WEB_LABEL), question=question),
+                temperature=temperature,
+            )
+            if prompts.WEB_NOT_FOUND_MARKER not in normalize(text):
+                return Answer(answer=text, source="web", sources=_strip_snippets(results))
 
-    async def _needs_web(self, question: str) -> bool:
-        # Obvious live-data questions skip the extra LLM round-trip
-        if any(k in question for k in prompts.WEB_HINT_KEYWORDS):
-            return True
-        verdict = await self.llm.chat(prompts.ROUTER_SYSTEM_PROMPT, question, temperature=0.0, max_tokens=8)
-        return "WEB" in verdict.upper()
+        # 3) Neither the files nor the web had an answer: refuse, never guess.
+        return Answer(answer=prompts.NO_ANSWER, source="none")
 
 
 def _format_context(refs: list[SourceRef], label: str) -> str:

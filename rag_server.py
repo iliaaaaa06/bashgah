@@ -174,6 +174,9 @@ NOT_FOUND_MARKER = "در فایل‌های من موجود نیست"
 WEB_NOT_FOUND_ANSWER = "متاسفانه در نتایج جستجوی وب اطلاعات معتبر و کافی درباره‌ی این موضوع یافت نشد."
 WEB_NOT_FOUND_MARKER = "در نتایج جستجوی وب اطلاعات"
 
+# Final refusal when neither the files nor the web search produced an answer
+NO_ANSWER = "متاسفانه نه در فایل‌های من و نه در جستجوی وب اطلاعات کافی برای پاسخ به این پرسش یافت نشد و نمی‌توانم به آن پاسخ دهم."
+
 DOCS_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» سازمان هستید و فقط و فقط بر اساس «اسناد بازیابی‌شده» که در پیام کاربر آمده است پاسخ می‌دهید.
 
 قوانین الزامی (بدون استثنا):
@@ -195,7 +198,7 @@ DOCS_USER_TEMPLATE = """اسناد بازیابی‌شده:
 
 پاسخ را فقط بر اساس اسناد بالا و طبق قوانین بنویسید."""
 
-WEB_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» هستید و این پرسش نیازمند اطلاعات به‌روز یا خارج از اسناد سازمان است. فقط بر اساس «نتایج جستجوی وب» که در پیام کاربر آمده پاسخ دهید.
+WEB_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» هستید و پاسخ این پرسش در اسناد سازمان یافت نشد. فقط بر اساس «نتایج جستجوی وب» که در پیام کاربر آمده پاسخ دهید.
 
 قوانین الزامی:
 ۱. فقط از اطلاعات موجود در نتایج جستجو استفاده کنید و از حدس یا دانش قبلی خود استفاده نکنید.
@@ -214,19 +217,6 @@ WEB_USER_TEMPLATE = """نتایج جستجوی وب:
 {question}
 
 پاسخ را فقط بر اساس نتایج بالا و طبق قوانین بنویسید."""
-
-ROUTER_SYSTEM_PROMPT = """شما یک طبقه‌بند هستید. تشخیص دهید آیا پاسخ به پرسش کاربر نیازمند اطلاعات زنده، به‌روز یا عمومیِ خارج از سازمان است یا خیر.
-
-- اگر پرسش درباره‌ی اخبار، رویدادهای اخیر، قیمت‌ها، نرخ ارز، آب‌وهوا، تاریخ و زمان امروز، یا دانش عمومی جهان (خارج از قوانین، آیین‌نامه‌ها، بخشنامه‌ها و امور داخلی سازمان) است، بنویسید: WEB
-- اگر پرسش درباره‌ی امور داخلی، اداری، قوانین، آیین‌نامه‌ها، فرایندها، کارکنان یا اسناد سازمان است، بنویسید: INTERNAL
-
-فقط یک کلمه بنویسید: WEB یا INTERNAL"""
-
-# Keywords that clearly signal live/external data; matched before asking the router LLM
-WEB_HINT_KEYWORDS = (
-    "امروز", "اخبار", "نرخ ارز", "دلار", "یورو", "طلا", "سکه", "بورس",
-    "آب و هوا", "آب‌وهوا", "جدیدترین", "اینترنت", "جستجو کن", "در وب",
-)
 
 DOC_LABEL = "سند"
 WEB_LABEL = "منبع"
@@ -672,28 +662,22 @@ class RAGEngine:
             if NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="documents", sources=_strip_snippets(hits))
 
-        # 2) Nothing usable in the files: web only if the question actually needs external/live knowledge.
-        if self.settings.web_search_enabled and await self._needs_web(question):
-            results = await asyncio.to_thread(self.web.search, question)
-            if results:
-                text = await self.llm.chat(
-                    WEB_SYSTEM_PROMPT,
-                    WEB_USER_TEMPLATE.format(context=_format_context(results, WEB_LABEL), question=question),
-                    temperature=temperature,
-                )
-                if WEB_NOT_FOUND_MARKER not in normalize(text):
-                    return Answer(answer=text, source="web", sources=_strip_snippets(results))
-            return Answer(answer=WEB_NOT_FOUND_ANSWER, source="none")
+        if not self.settings.web_search_enabled:
+            return Answer(answer=NOT_FOUND_ANSWER, source="none")
 
-        # 3) Internal question with no supporting documents: refuse, never guess.
-        return Answer(answer=NOT_FOUND_ANSWER, source="none")
+        # 2) Nothing usable in the files: always search the web; the model decides if the results answer it.
+        results = await asyncio.to_thread(self.web.search, question)
+        if results:
+            text = await self.llm.chat(
+                WEB_SYSTEM_PROMPT,
+                WEB_USER_TEMPLATE.format(context=_format_context(results, WEB_LABEL), question=question),
+                temperature=temperature,
+            )
+            if WEB_NOT_FOUND_MARKER not in normalize(text):
+                return Answer(answer=text, source="web", sources=_strip_snippets(results))
 
-    async def _needs_web(self, question: str) -> bool:
-        # Obvious live-data questions skip the extra LLM round-trip
-        if any(k in question for k in WEB_HINT_KEYWORDS):
-            return True
-        verdict = await self.llm.chat(ROUTER_SYSTEM_PROMPT, question, temperature=0.0, max_tokens=8)
-        return "WEB" in verdict.upper()
+        # 3) Neither the files nor the web had an answer: refuse, never guess.
+        return Answer(answer=NO_ANSWER, source="none")
 
 
 def _format_context(refs: list[SourceRef], label: str) -> str:
