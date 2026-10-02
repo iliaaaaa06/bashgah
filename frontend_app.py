@@ -81,6 +81,7 @@ class T:
 
     SOURCE_BADGES = {
         "documents": ":green-badge[پاسخ از اسناد]",
+        "model": ":violet-badge[پاسخ از دانش مدل]",
         "web": ":blue-badge[پاسخ از جستجوی وب]",
         "none": ":orange-badge[پاسخی یافت نشد]",
     }

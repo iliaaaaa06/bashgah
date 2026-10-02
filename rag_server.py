@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     llm_api_key: str = "not-needed"
     llm_model: str = "local-model"
     llm_max_tokens: int = 1024
+    # Sent as reasoning_effort when set; "none" turns thinking off on Ollama for reasoning models (gemma4, qwen3, ...)
+    llm_reasoning_effort: str = ""
     llm_timeout: float = 180.0
 
     # --- Embedding ---
@@ -174,8 +176,8 @@ NOT_FOUND_MARKER = "در فایل‌های من موجود نیست"
 WEB_NOT_FOUND_ANSWER = "متاسفانه در نتایج جستجوی وب اطلاعات معتبر و کافی درباره‌ی این موضوع یافت نشد."
 WEB_NOT_FOUND_MARKER = "در نتایج جستجوی وب اطلاعات"
 
-# Final refusal when neither the files nor the web search produced an answer
-NO_ANSWER = "متاسفانه نه در فایل‌های من و نه در جستجوی وب اطلاعات کافی برای پاسخ به این پرسش یافت نشد و نمی‌توانم به آن پاسخ دهم."
+# Final refusal when neither the files, the model's own knowledge nor the web search produced an answer
+NO_ANSWER = "متاسفانه نه در فایل‌های من، نه در دانش خودم و نه در جستجوی وب اطلاعات کافی برای پاسخ به این پرسش یافت نشد و نمی‌توانم به آن پاسخ دهم."
 
 DOCS_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» سازمان هستید و فقط و فقط بر اساس «اسناد بازیابی‌شده» که در پیام کاربر آمده است پاسخ می‌دهید.
 
@@ -198,7 +200,19 @@ DOCS_USER_TEMPLATE = """اسناد بازیابی‌شده:
 
 پاسخ را فقط بر اساس اسناد بالا و طبق قوانین بنویسید."""
 
-WEB_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» هستید و پاسخ این پرسش در اسناد سازمان یافت نشد. با استفاده از «نتایج جستجوی وب» که در پیام کاربر آمده، خودتان به سؤال پاسخ دهید.
+MODEL_NOT_FOUND_ANSWER = "متاسفانه از دانش خودم پاسخ مطمئنی برای این پرسش ندارم."
+MODEL_NOT_FOUND_MARKER = "پاسخ مطمئنی برای این پرسش ندارم"
+
+MODEL_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» هستید و پاسخ این پرسش در اسناد سازمان یافت نشد. اکنون با تکیه بر دانش عمومی خودتان پاسخ دهید.
+
+قوانین الزامی:
+۱. فقط وقتی پاسخ دهید که از درستی آن مطمئن هستید؛ مثل احوالپرسی، مفاهیم عمومی، تعریف‌ها، دانش علمی و تاریخی ثابت و پرسش‌های کلی.
+۲. اگر پرسش به اطلاعات به‌روز یا متغیر نیاز دارد (اخبار، قیمت‌ها، نرخ‌ها، قوانین و بخشنامه‌های جدید، رویدادهای اخیر، آمار، اطلاعات تماس و ...) یا از پاسخ مطمئن نیستید، به هیچ وجه حدس نزنید و فقط و دقیقاً این جمله را بنویسید:
+{MODEL_NOT_FOUND_ANSWER}
+۳. پاسخ را مستقیم، مختصر و ساختاریافته بنویسید و به زبان فارسی رسمی، روان و اداری پاسخ دهید.
+۴. ادعا نکنید که پاسخ از اسناد سازمان آمده است."""
+
+WEB_SYSTEM_PROMPT = f"""شما «دستیار اداری هوشمند» هستید و پاسخ این پرسش در اسناد سازمان و دانش شما یافت نشد. با استفاده از «نتایج جستجوی وب» که در پیام کاربر آمده، خودتان به سؤال پاسخ دهید.
 
 قوانین الزامی:
 ۱. کار شما «پاسخ دادن» است، نه گزارش نتایج جستجو. پاسخ را مستقیماً با جواب سؤال شروع کنید و اطلاعات نتایج را با جمله‌های خودتان در قالب یک پاسخ منسجم و کامل بنویسید.
@@ -350,8 +364,9 @@ def _decode_txt(data: bytes) -> str:
 # ==================================================================================================
 logger = logging.getLogger(__name__)
 
-AnswerSource = Literal["documents", "web", "none"]
+AnswerSource = Literal["documents", "model", "web", "none"]
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_UNCLOSED_THINK = re.compile(r"<think>.*\Z", re.DOTALL)  # thinking cut off by max_tokens
 # A "منابع:" / "Sources:" section the model writes at the end of a web answer
 _TRAILING_SOURCES = re.compile(r"\n[#*\s]*(منابع|منبع‌ها|sources)\s*[:：]?\s*[*]*\s*\n.*\Z", re.DOTALL | re.IGNORECASE)
 
@@ -463,20 +478,36 @@ class LLMClient:
         )
         self.model = settings.llm_model
         self.max_tokens = settings.llm_max_tokens
+        self.reasoning_effort = settings.llm_reasoning_effort
 
     async def chat(self, system: str, user: str, temperature: float, max_tokens: int | None = None) -> str:
+        max_tokens = max_tokens or self.max_tokens
+        text = await self._complete(system, user, temperature, max_tokens)
+        if not text:
+            # Reasoning models (gemma, qwen3, ...) can spend the whole budget thinking and return no answer
+            logger.warning("LLM returned an empty answer with max_tokens=%d, retrying with more room", max_tokens)
+            text = await self._complete(system, user, temperature, max_tokens * 4)
+        return text
+
+    async def _complete(self, system: str, user: str, temperature: float, max_tokens: int) -> str:
+        extra = {"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 temperature=temperature,
-                max_tokens=max_tokens or self.max_tokens,
+                max_tokens=max_tokens,
+                **extra,
             )
         except (APIConnectionError, APITimeoutError, APIError) as exc:
             logger.error("LLM request failed: %s", exc)
             raise LLMUnavailableError from exc
-        text = response.choices[0].message.content or ""
-        return _THINK_BLOCK.sub("", text).strip()
+        choice = response.choices[0]
+        text = _THINK_BLOCK.sub("", choice.message.content or "")
+        text = _UNCLOSED_THINK.sub("", text).strip()
+        if not text:
+            logger.warning("Empty LLM answer (finish_reason=%s)", choice.finish_reason)
+        return text
 
     async def is_alive(self) -> bool:
         try:
@@ -662,13 +693,18 @@ class RAGEngine:
                 DOCS_USER_TEMPLATE.format(context=_format_context(hits, DOC_LABEL), question=question),
                 temperature=temperature,
             )
-            if NOT_FOUND_MARKER not in normalize(text):
+            if text and NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="documents", sources=_strip_snippets(hits))
+
+        # 2) Not in the files: let the model answer from its own knowledge, unless it isn't sure.
+        text = await self.llm.chat(MODEL_SYSTEM_PROMPT, question, temperature=temperature)
+        if text and MODEL_NOT_FOUND_MARKER not in normalize(text):
+            return Answer(answer=text, source="model")
 
         if not self.settings.web_search_enabled:
             return Answer(answer=NOT_FOUND_ANSWER, source="none")
 
-        # 2) Nothing usable in the files: always search the web; the model decides if the results answer it.
+        # 3) The model doesn't know either: search the web; the model decides if the results answer it.
         results = await asyncio.to_thread(self.web.search, question)
         if results:
             text = await self.llm.chat(
@@ -676,12 +712,12 @@ class RAGEngine:
                 WEB_USER_TEMPLATE.format(context=_format_context(results, WEB_LABEL), question=question),
                 temperature=temperature,
             )
-            if WEB_NOT_FOUND_MARKER not in normalize(text):
-                # The UI lists the sources under the answer, so drop any list the model appended itself
-                text = _TRAILING_SOURCES.sub("", text).strip()
+            # The UI lists the sources under the answer, so drop any list the model appended itself
+            text = _TRAILING_SOURCES.sub("", text).strip()
+            if text and WEB_NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="web", sources=_strip_snippets(results))
 
-        # 3) Neither the files nor the web had an answer: refuse, never guess.
+        # 4) Nothing worked: refuse, never guess.
         return Answer(answer=NO_ANSWER, source="none")
 
 
@@ -748,7 +784,7 @@ class SourceOut(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    source: Literal["documents", "web", "none"]
+    source: Literal["documents", "model", "web", "none"]
     sources: list[SourceOut]
     temperature: float
 

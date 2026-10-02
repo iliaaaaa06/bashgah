@@ -19,8 +19,9 @@ from app.persian import CHUNK_SEPARATORS, normalize
 
 logger = logging.getLogger(__name__)
 
-AnswerSource = Literal["documents", "web", "none"]
+AnswerSource = Literal["documents", "model", "web", "none"]
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_UNCLOSED_THINK = re.compile(r"<think>.*\Z", re.DOTALL)  # thinking cut off by max_tokens
 # A "منابع:" / "Sources:" section the model writes at the end of a web answer
 _TRAILING_SOURCES = re.compile(r"\n[#*\s]*(منابع|منبع‌ها|sources)\s*[:：]?\s*[*]*\s*\n.*\Z", re.DOTALL | re.IGNORECASE)
 
@@ -132,20 +133,36 @@ class LLMClient:
         )
         self.model = settings.llm_model
         self.max_tokens = settings.llm_max_tokens
+        self.reasoning_effort = settings.llm_reasoning_effort
 
     async def chat(self, system: str, user: str, temperature: float, max_tokens: int | None = None) -> str:
+        max_tokens = max_tokens or self.max_tokens
+        text = await self._complete(system, user, temperature, max_tokens)
+        if not text:
+            # Reasoning models (gemma, qwen3, ...) can spend the whole budget thinking and return no answer
+            logger.warning("LLM returned an empty answer with max_tokens=%d, retrying with more room", max_tokens)
+            text = await self._complete(system, user, temperature, max_tokens * 4)
+        return text
+
+    async def _complete(self, system: str, user: str, temperature: float, max_tokens: int) -> str:
+        extra = {"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {}
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 temperature=temperature,
-                max_tokens=max_tokens or self.max_tokens,
+                max_tokens=max_tokens,
+                **extra,
             )
         except (APIConnectionError, APITimeoutError, APIError) as exc:
             logger.error("LLM request failed: %s", exc)
             raise LLMUnavailableError from exc
-        text = response.choices[0].message.content or ""
-        return _THINK_BLOCK.sub("", text).strip()
+        choice = response.choices[0]
+        text = _THINK_BLOCK.sub("", choice.message.content or "")
+        text = _UNCLOSED_THINK.sub("", text).strip()
+        if not text:
+            logger.warning("Empty LLM answer (finish_reason=%s)", choice.finish_reason)
+        return text
 
     async def is_alive(self) -> bool:
         try:
@@ -331,13 +348,18 @@ class RAGEngine:
                 prompts.DOCS_USER_TEMPLATE.format(context=_format_context(hits, prompts.DOC_LABEL), question=question),
                 temperature=temperature,
             )
-            if prompts.NOT_FOUND_MARKER not in normalize(text):
+            if text and prompts.NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="documents", sources=_strip_snippets(hits))
+
+        # 2) Not in the files: let the model answer from its own knowledge, unless it isn't sure.
+        text = await self.llm.chat(prompts.MODEL_SYSTEM_PROMPT, question, temperature=temperature)
+        if text and prompts.MODEL_NOT_FOUND_MARKER not in normalize(text):
+            return Answer(answer=text, source="model")
 
         if not self.settings.web_search_enabled:
             return Answer(answer=prompts.NOT_FOUND_ANSWER, source="none")
 
-        # 2) Nothing usable in the files: always search the web; the model decides if the results answer it.
+        # 3) The model doesn't know either: search the web; the model decides if the results answer it.
         results = await asyncio.to_thread(self.web.search, question)
         if results:
             text = await self.llm.chat(
@@ -345,12 +367,12 @@ class RAGEngine:
                 prompts.WEB_USER_TEMPLATE.format(context=_format_context(results, prompts.WEB_LABEL), question=question),
                 temperature=temperature,
             )
-            if prompts.WEB_NOT_FOUND_MARKER not in normalize(text):
-                # The UI lists the sources under the answer, so drop any list the model appended itself
-                text = _TRAILING_SOURCES.sub("", text).strip()
+            # The UI lists the sources under the answer, so drop any list the model appended itself
+            text = _TRAILING_SOURCES.sub("", text).strip()
+            if text and prompts.WEB_NOT_FOUND_MARKER not in normalize(text):
                 return Answer(answer=text, source="web", sources=_strip_snippets(results))
 
-        # 3) Neither the files nor the web had an answer: refuse, never guess.
+        # 4) Nothing worked: refuse, never guess.
         return Answer(answer=prompts.NO_ANSWER, source="none")
 
 

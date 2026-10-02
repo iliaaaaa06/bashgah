@@ -57,7 +57,7 @@ class SourceOut(BaseModel):
 
 class ChatResponse(BaseModel):
     answer: str
-    source: Literal["documents", "web", "none"]
+    source: Literal["documents", "model", "web", "none"]
     sources: list[SourceOut]
     temperature: float
 

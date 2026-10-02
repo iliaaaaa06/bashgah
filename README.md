@@ -125,7 +125,7 @@ curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
 
 پاسخ `/chat`:
 ```json
-{"answer": "...", "source": "documents | web | none", "sources": [{"title": "...", "page": 3, "score": 0.71, "snippet": "..."}], "temperature": 0.1}
+{"answer": "...", "source": "documents | model | web | none", "sources": [{"title": "...", "page": 3, "score": 0.71, "snippet": "..."}], "temperature": 0.1}
 ```
 
 ## نکات

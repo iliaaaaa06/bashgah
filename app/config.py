@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     llm_api_key: str = "not-needed"
     llm_model: str = "local-model"
     llm_max_tokens: int = 1024
+    # Sent as reasoning_effort when set; "none" turns thinking off on Ollama for reasoning models (gemma4, qwen3, ...)
+    llm_reasoning_effort: str = ""
     llm_timeout: float = 180.0
 
     # --- Embedding ---
