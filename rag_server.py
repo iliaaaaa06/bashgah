@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # --- API ---
     app_host: str = "0.0.0.0"
     app_port: int = 8000
-    admin_api_key: str = Field(..., min_length=16)
+    admin_api_key: str = Field(..., min_length=1)
     cors_origins: str = "*"  # comma separated
 
     # --- LLM (any OpenAI-compatible server: llama.cpp llama-server, vLLM, ...) ---
