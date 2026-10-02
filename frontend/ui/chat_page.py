@@ -20,8 +20,18 @@ def _sidebar_settings() -> None:
             st.rerun()
 
 
-def _render_sources(sources: list[dict]) -> None:
+def _render_sources(sources: list[dict], source: str) -> None:
     if not sources:
+        return
+    if source == "web":
+        # Web answers: the answer comes first, then just the search results as links
+        items = []
+        for i, s in enumerate(sources, start=1):
+            title = esc(s.get("title") or T.SOURCE_UNTITLED)
+            url = esc(s.get("url") or "")
+            link = f'<a href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>' if url else title
+            items.append(f'<div class="source-item" dir="rtl">{fa(i)}. {link}</div>')
+        st.html(f'<div dir="rtl"><b>{T.WEB_SOURCES_TITLE}</b></div>' + "".join(items))
         return
     with st.expander(T.SOURCES_TITLE.format(n=fa(len(sources)))):
         items = []
@@ -48,7 +58,7 @@ def _render_message(msg: dict) -> None:
         if msg["role"] == "assistant":
             badge = T.SOURCE_BADGES.get(msg.get("source", ""), "")
             st.caption(f"{badge}  {T.TEMPERATURE_CAPTION.format(t=fa(msg.get('temperature', '')))}")
-            _render_sources(msg.get("sources", []))
+            _render_sources(msg.get("sources", []), msg.get("source", ""))
 
 
 def _ask(question: str) -> dict:

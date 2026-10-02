@@ -38,6 +38,7 @@ SOURCE_BADGES = {
 }
 TEMPERATURE_CAPTION = "دما {t}"
 SOURCES_TITLE = "منابع ({n})"
+WEB_SOURCES_TITLE = "منابع جستجوی وب:"
 SOURCE_PAGE = "صفحه {p}"
 SOURCE_SCORE = "شباهت {s}٪"
 SOURCE_UNTITLED = "بدون عنوان"

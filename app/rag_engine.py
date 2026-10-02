@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 AnswerSource = Literal["documents", "web", "none"]
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
+# A "منابع:" / "Sources:" section the model writes at the end of a web answer
+_TRAILING_SOURCES = re.compile(r"\n[#*\s]*(منابع|منبع‌ها|sources)\s*[:：]?\s*[*]*\s*\n.*\Z", re.DOTALL | re.IGNORECASE)
 
 
 class LLMUnavailableError(Exception):
@@ -344,6 +346,8 @@ class RAGEngine:
                 temperature=temperature,
             )
             if prompts.WEB_NOT_FOUND_MARKER not in normalize(text):
+                # The UI lists the sources under the answer, so drop any list the model appended itself
+                text = _TRAILING_SOURCES.sub("", text).strip()
                 return Answer(answer=text, source="web", sources=_strip_snippets(results))
 
         # 3) Neither the files nor the web had an answer: refuse, never guess.
