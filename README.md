@@ -7,6 +7,7 @@
 ```
 bashgah/
 ├── rag_server.py         # کل بک‌اند: FastAPI، RAG، ChromaDB، مدل زبانی، جستجوی وب، پرامپت‌ها و پیام‌های فارسی
+├── dev_server.py         # سرور تست برای لپ‌تاپ: همان API، بدون هیچ مدلی (پاسخ آزمایشی)
 ├── frontend_app.py       # کل رابط کاربری Streamlit (گفتگو + مدیریت اسناد)؛ فقط از طریق HTTP به بک‌اند وصل می‌شود
 ├── .env                  # تنظیمات و آدرس‌ها (در git نیست)
 ├── .env.example          # الگوی تنظیمات
@@ -16,7 +17,7 @@ bashgah/
 │   ├── start_frontend.sh   # اجرای رابط کاربری
 │   ├── start_llm.sh        # راه‌اندازی llama-server (فقط اگر مدل را روی همین سیستم اجرا کنید)
 │   └── check_connection.py # بررسی اتصال به سرور مدل
-└── data/                 # ChromaDB و فایل‌های آپلودشده (خودکار ساخته می‌شود)
+└── data/                 # ChromaDB، فایل‌های آپلودشده و app.db (کاربران و گفتگوها)، خودکار ساخته می‌شود
 ```
 
 ## معماری
@@ -81,32 +82,53 @@ cp .env.example .env        # پیش‌فرض‌های این فایل برای 
 
 هر دو فایل `.env` را از کنار خودشان می‌خوانند. اگر سیستم چند IP دارد و Streamlit آدرس اشتباهی به‌عنوان «Network URL» چاپ می‌کند، `FRONTEND_PUBLIC_HOST` را در `.env` تنظیم کنید.
 
-## رابط کاربری و API
+## تست روی لپ‌تاپ بدون مدل
 
-رابط کاربری (Streamlit): `http://localhost:8501/`. صفحه‌ی «گفتگو» برای کاربران است و صفحه‌ی «مدیریت اسناد» با کلید مدیر باز می‌شود. اگر فرانت روی سیستم دیگری اجرا می‌شود، `BACKEND_URL` را در `.env` تنظیم کنید.
+`dev_server.py` همان API را بالا می‌آورد، ولی به هیچ مدل زبانی، مدل embedding یا جستجوی وب وصل نمی‌شود. به هر پرسش یک پاسخ آزمایشی ثابت می‌دهد و داده‌هایش را در `data_dev/` نگه می‌دارد تا با داده‌های واقعی قاطی نشود:
+```bash
+.venv/bin/python dev_server.py      # به‌جای rag_server.py
+.venv/bin/python frontend_app.py
+```
+روی سرور اصلی همان `rag_server.py` را اجرا کنید.
 
-مستندات تعاملی API: `http://localhost:8000/docs`
+## حساب کاربری و مدیر
+
+- هر کسی از صفحه‌ی ورود می‌تواند «ثبت‌نام» کند. گفتگوهای هر کاربر جدا ذخیره می‌شوند و فقط خودش آن‌ها را می‌بیند.
+- با دکمه‌ی «گفتگوی جدید» یک گفتگوی تازه شروع می‌شود و گفتگوهای قبلی در نوار کناری می‌مانند.
+- مدل پیام‌های قبلیِ **همان گفتگو** را به خاطر دارد (به تعداد `CHAT_MEMORY_MESSAGES`، پیش‌فرض ۶)، پس پرسش‌های ادامه‌دار مثل «برای قراردادی‌ها چطور؟» هم جواب می‌گیرند. چنین پرسشی پیش از جستجو در اسناد و وب به یک پرسش کامل بازنویسی می‌شود. گفتگوهای دیگر و کاربران دیگر در این حافظه نیستند.
+- هر کاربری که یک بار `ADMIN_PASSWORD` را در صفحه‌ی «مدیریت اسناد» وارد کند، برای همیشه مدیر می‌شود و می‌تواند اسناد را بارگذاری و حذف کند.
+- کاربران، نشست‌ها و گفتگوها در جدول‌های `users`، `sessions`، `chats` و `messages` ذخیره می‌شوند. اگر `DB_NAME` پر باشد در PostgreSQL، وگرنه در فایل SQLite مسیر `DB_PATH`. جدول‌ها موقع اجرای سرور خودکار ساخته می‌شوند.
+- ساخت پایگاه داده‌ی PostgreSQL (یک بار):
+  ```bash
+  psql -d postgres -c "CREATE ROLE bashgah LOGIN PASSWORD 'رمز'" -c "CREATE DATABASE autenticationbasgha OWNER bashgah"
+  # در .env:  DB_NAME=autenticationbasgha  DB_USER=bashgah  DB_PASSWORD=رمز
+  ```
+
+## API
+
+مستندات تعاملی: `http://localhost:8000/docs`. همه‌ی مسیرها به‌جز `/health`، `/auth/register` و `/auth/login` هدر `Authorization: Bearer <token>` لازم دارند.
 
 | متد | مسیر | دسترسی | توضیح |
 |---|---|---|---|
 | GET | `/health` | عمومی | وضعیت سرویس، مدل و تعداد قطعه‌های ایندکس‌شده |
-| POST | `/chat` | کاربران | `{"message": "...", "temperature": 0.2, "top_k": 5}` |
+| POST | `/auth/register`، `/auth/login` | عمومی | `{"username": "...", "password": "..."}` ← `{"token": "...", "user": {...}}` |
+| POST | `/auth/logout` · GET `/auth/me` | کاربر | خروج · اطلاعات کاربر |
+| POST | `/auth/become-admin` | کاربر | `{"password": "<ADMIN_PASSWORD>"}` |
+| GET / POST | `/chats` | کاربر | فهرست گفتگوهای من · ساخت گفتگوی جدید |
+| GET / DELETE | `/chats/{id}` | کاربر | پیام‌های یک گفتگو · حذف آن |
+| POST | `/chats/{id}/messages` | کاربر | `{"message": "...", "temperature": 0.2}`: پرسش و پاسخ هر دو ذخیره می‌شوند |
 | POST | `/admin/upload` | مدیر | multipart با فیلد `files` (یک یا چند فایل) |
 | GET | `/admin/documents` | مدیر | فهرست اسناد |
 | DELETE | `/admin/documents/{doc_id}` | مدیر | حذف یک سند |
 
-برای مسیرهای مدیر، هدر `X-Admin-Key` با مقدار `ADMIN_API_KEY` لازم است.
-
 ```bash
-curl -X POST localhost:8000/admin/upload -H "X-Admin-Key: $KEY" -F "files=@آیین‌نامه.pdf"
-curl -X POST localhost:8000/chat -H "Content-Type: application/json" \
-     -d '{"message": "مرخصی استحقاقی سالانه چند روز است؟", "temperature": 0.1}'
+TOKEN=$(curl -s -X POST localhost:8000/auth/login -H "Content-Type: application/json" \
+        -d '{"username": "ali", "password": "123456"}' | python -c "import sys,json;print(json.load(sys.stdin)['token'])")
+curl -X POST localhost:8000/chats -H "Authorization: Bearer $TOKEN"
+curl -X POST localhost:8000/chats/1/messages -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"message": "مرخصی استحقاقی سالانه چند روز است؟"}'
 ```
-
-پاسخ `/chat`:
-```json
-{"answer": "...", "source": "documents | model | web | none", "sources": [{"title": "...", "page": 3, "score": 0.71, "snippet": "..."}], "temperature": 0.1}
-```
+پاسخ: `{"role": "assistant", "content": "...", "source": "documents | model | web | none", "sources": [...], "temperature": 0.2, "title": "..."}`
 
 ## نکات
 - PDF اسکن‌شده (تصویری) متن ندارد و با پیام خطا رد می‌شود. برای این نوع فایل‌ها باید OCR اضافه شود.

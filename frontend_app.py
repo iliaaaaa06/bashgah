@@ -74,8 +74,10 @@ class ApiError(Exception):
         self.message, self.status, self.errors = message, status, errors or []
 
 
-def api(method: str, path: str, admin_key: str | None = None, timeout: float = REQUEST_TIMEOUT, **kwargs):
-    headers = {"X-Admin-Key": admin_key} if admin_key else {}
+def api(method: str, path: str, timeout: float = REQUEST_TIMEOUT, **kwargs):
+    """Calls the backend with the logged-in user's token. An expired token sends the user back to the login form."""
+    token = st.session_state.get("token")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         r = httpx.request(method, BACKEND_URL + path, headers=headers, timeout=timeout, **kwargs)
     except httpx.TimeoutException as exc:
@@ -87,10 +89,17 @@ def api(method: str, path: str, admin_key: str | None = None, timeout: float = R
     except ValueError:
         data = None
     if r.is_error:
+        if r.status_code == 401 and token:
+            st.session_state.clear()
+            st.rerun()
         detail = data.get("detail") if isinstance(data, dict) else None
         errors = data.get("errors") if isinstance(data, dict) else None
         raise ApiError(detail if isinstance(detail, str) else "خطای ناشناخته از سرور دریافت شد.", r.status_code, errors)
     return data
+
+
+def error_text(exc: ApiError) -> str:
+    return exc.message + "".join(f"\n- {e.get('message')}" for e in exc.errors)
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -101,19 +110,47 @@ def health() -> dict | None:
         return None
 
 
+# ================================================================== login / sign-up
+def login_page() -> None:
+    st.title("دستیار اداری هوشمند")
+    login_tab, register_tab = st.tabs(["ورود", "ثبت‌نام"])
+    for tab, path, button in ((login_tab, "/auth/login", "ورود"), (register_tab, "/auth/register", "ساخت حساب")):
+        with tab, st.form(path):
+            username = st.text_input("نام کاربری", help="دست‌کم ۳ حرف")
+            password = st.text_input("رمز عبور", type="password", help="دست‌کم ۶ حرف")
+            if st.form_submit_button(button, type="primary"):
+                try:
+                    r = api("POST", path, json={"username": username, "password": password})
+                except ApiError as exc:
+                    st.error(error_text(exc))
+                    continue
+                st.session_state.token, st.session_state.user = r["token"], r["user"]
+                st.rerun()
+
+
+def logout() -> None:
+    try:
+        api("POST", "/auth/logout")
+    except ApiError:
+        pass
+    st.session_state.clear()
+    st.rerun()
+
+
 # ================================================================== sidebar
 def sidebar() -> None:
+    user = st.session_state.user
     with st.sidebar:
-        st.subheader("وضعیت سرویس")
+        role = " :violet-badge[مدیر]" if user["is_admin"] else ""
+        st.markdown(f"**{user['username']}**{role}")
+        if st.button("خروج از حساب", icon=":material/logout:", width="stretch"):
+            logout()
         h = health()
         dot, text = ("err", "سرور در دسترس نیست") if h is None else \
             ("warn", "مدل زبانی در دسترس نیست") if not h.get("llm_available") else ("ok", "آماده")
         st.html(f'<div dir="rtl"><span class="dot {dot}"></span>{text}</div>')
         if h is not None:
             st.caption(f"{fa(h.get('indexed_chunks', 0))} قطعه در پایگاه دانش")
-        if st.button("بررسی مجدد", icon=":material/refresh:", width="stretch"):
-            health.clear()
-            st.rerun()
         st.divider()
 
 
@@ -155,30 +192,66 @@ def show_message(msg: dict) -> None:
             show_sources(msg)
 
 
-def ask(question: str) -> dict:
-    temperature = st.session_state.temperature
-    try:
-        r = api("POST", "/chat", json={"message": question, "temperature": temperature})
-    except ApiError as exc:
-        details = "".join(f"\n- {e.get('message')}" for e in exc.errors)
-        return {"role": "assistant", "content": exc.message + details, "error": True}
-    return {"role": "assistant", "content": r["answer"], "source": r["source"], "sources": r.get("sources", []),
-            "temperature": r.get("temperature", temperature)}
+def open_chat(chat_id: int | None) -> None:
+    """Loads a saved chat (or starts an empty one when chat_id is None)."""
+    st.session_state.chat = {"id": None, "title": "گفتگوی جدید", "messages": []}
+    if chat_id is not None:
+        try:
+            st.session_state.chat = api("GET", f"/chats/{chat_id}")
+        except ApiError as exc:
+            st.error(exc.message)
 
 
-def chat_page() -> None:
+def chats_sidebar() -> None:
+    chat = st.session_state.chat
     with st.sidebar:
-        st.subheader("تنظیمات گفتگو")
+        if st.button("گفتگوی جدید", icon=":material/add_comment:", width="stretch"):
+            open_chat(None)  # the chat is saved once its first question is sent
+            st.rerun()
+        try:
+            chats = api("GET", "/chats")
+        except ApiError as exc:
+            st.error(exc.message)
+            chats = []
+        if chats:
+            st.caption("گفتگوهای من")
+        for c in chats:
+            current = c["id"] == chat["id"]
+            if st.button(c["title"], key=f"chat_{c['id']}", width="stretch", type="primary" if current else "secondary"):
+                open_chat(c["id"])
+                st.rerun()
+        if chat["id"] is not None and st.button("حذف این گفتگو", icon=":material/delete:", width="stretch"):
+            try:
+                api("DELETE", f"/chats/{chat['id']}")
+            except ApiError as exc:
+                st.error(exc.message)
+            open_chat(None)
+            st.rerun()
+        st.divider()
         # Lives in st.session_state => independent for every user / browser tab
         st.slider("دما (Temperature)", 0.0, MAX_TEMPERATURE, DEFAULT_TEMPERATURE, step=0.05, key="temperature",
                   help="دمای کمتر = پاسخ دقیق‌تر و ثابت‌تر · دمای بیشتر = پاسخ متنوع‌تر. این تنظیم فقط روی گفتگوی شما اثر دارد.")
-        if st.button("پاک کردن گفتگو", icon=":material/delete_sweep:", width="stretch"):
-            st.session_state.messages = []
-            st.rerun()
 
-    messages = st.session_state.setdefault("messages", [])
-    st.title("گفتگو با دستیار")
-    if not messages:
+
+def ask(question: str) -> dict:
+    chat = st.session_state.chat
+    try:
+        if chat["id"] is None:
+            chat["id"] = api("POST", "/chats")["id"]
+        r = api("POST", f"/chats/{chat['id']}/messages", json={"message": question, "temperature": st.session_state.temperature})
+    except ApiError as exc:
+        return {"role": "assistant", "content": error_text(exc), "error": True}
+    chat["title"] = r.pop("title")
+    return r
+
+
+def chat_page() -> None:
+    if "chat" not in st.session_state:
+        open_chat(None)
+    chats_sidebar()
+    chat = st.session_state.chat
+    st.title(chat["title"] if chat["id"] is not None else "گفتگو با دستیار")
+    if not chat["messages"]:
         st.info("پرسش خود را درباره‌ی آیین‌نامه‌ها، بخشنامه‌ها و امور اداری بنویسید. "
                 "پاسخ ابتدا از اسناد ثبت‌شده، سپس از دانش مدل و در نهایت از جستجوی وب تهیه می‌شود.")
         for col, suggestion in zip(st.columns(len(SUGGESTIONS)), SUGGESTIONS):
@@ -186,62 +259,41 @@ def chat_page() -> None:
                 st.session_state.pending_prompt = suggestion
                 st.rerun()
 
-    for msg in messages:
+    for msg in chat["messages"]:
         show_message(msg)
 
     prompt = st.chat_input("پیام خود را بنویسید…") or st.session_state.pop("pending_prompt", None)
     if prompt:
-        messages.append({"role": "user", "content": prompt})
-        show_message(messages[-1])
+        is_new = chat["id"] is None
+        chat["messages"].append({"role": "user", "content": prompt})
+        show_message(chat["messages"][-1])
         with st.spinner("در حال جستجو و تهیه‌ی پاسخ…"):
-            messages.append(ask(prompt))
-        show_message(messages[-1])
+            chat["messages"].append(ask(prompt))
+        show_message(chat["messages"][-1])
+        if is_new and chat["id"] is not None:
+            st.rerun()  # show the new chat in the sidebar list
     st.caption("پاسخ‌ها را پیش از استفاده‌ی رسمی بررسی کنید.")
 
 
 # ================================================================== admin page
-def logout() -> None:
-    for k in ("admin_key", "upload_results", "confirm_delete"):
-        st.session_state.pop(k, None)
-
-
-def admin_call(*args, **kwargs):
-    """Backend call with the admin key; a rejected key logs the admin out."""
-    try:
-        return api(*args, admin_key=st.session_state.admin_key, **kwargs)
-    except ApiError as exc:
-        if exc.status == 401:
-            logout()
+def become_admin() -> None:
+    st.info("برای مدیریت اسناد، رمز مدیر را وارد کنید. پس از آن حساب شما برای همیشه مدیر می‌ماند.")
+    with st.form("become_admin"):
+        password = st.text_input("رمز مدیر", type="password")
+        if st.form_submit_button("تأیید", type="primary"):
+            try:
+                st.session_state.user = api("POST", "/auth/become-admin", json={"password": password})
+            except ApiError as exc:
+                st.error(error_text(exc))
+                return
             st.rerun()
-        st.error(exc.message)
-        return None
 
 
 def admin_page() -> None:
     st.title("مدیریت اسناد")
-    if not st.session_state.get("admin_key"):
-        st.subheader("ورود مدیر")
-        with st.form("admin_login"):
-            key = st.text_input("کلید مدیر", type="password",
-                                help="برای بارگذاری و حذف اسناد، کلید مدیر (ADMIN_API_KEY) را وارد کنید.").strip()
-            submitted = st.form_submit_button("ورود", type="primary")
-        if submitted:
-            if not key:
-                st.error("کلید مدیر را وارد کنید.")
-                return
-            try:
-                api("GET", "/admin/documents", admin_key=key)  # validates the key
-            except ApiError as exc:
-                st.error(exc.message)
-                return
-            st.session_state.admin_key = key
-            st.rerun()
+    if not st.session_state.user["is_admin"]:
+        become_admin()
         return
-
-    with st.sidebar:
-        if st.button("خروج", icon=":material/logout:", width="stretch"):
-            logout()
-            st.rerun()
 
     # ---------- upload
     st.subheader("بارگذاری اسناد")
@@ -251,12 +303,13 @@ def admin_page() -> None:
     if st.button("بارگذاری و پردازش", type="primary", disabled=not files, icon=":material/upload:"):
         payload = [("files", (f.name, f.getvalue(), f.type or "application/octet-stream")) for f in files]
         with st.spinner(f"در حال پردازش {fa(len(files))} فایل… (ممکن است برای فایل‌های بزرگ چند دقیقه طول بکشد)"):
-            result = admin_call("POST", "/admin/upload", files=payload)
-        if result:
-            st.session_state.upload_results = result["results"]
-            st.session_state.uploader_id += 1
-            health.clear()
-            st.rerun()
+            try:
+                st.session_state.upload_results = api("POST", "/admin/upload", files=payload)["results"]
+                st.session_state.uploader_id += 1
+                health.clear()
+                st.rerun()
+            except ApiError as exc:
+                st.error(exc.message)
     show = {"ingested": st.success, "duplicate": st.warning, "error": st.error}
     for r in st.session_state.get("upload_results", []):
         show.get(r["status"], st.info)(r["message"] + (f" ({fa(r['chunks'])} قطعه)" if r.get("chunks") else ""))
@@ -267,8 +320,10 @@ def admin_page() -> None:
     head.subheader("اسناد ثبت‌شده")
     if refresh.button("بروزرسانی", icon=":material/refresh:", width="stretch"):
         st.rerun()
-    docs = admin_call("GET", "/admin/documents")
-    if docs is None:
+    try:
+        docs = api("GET", "/admin/documents")
+    except ApiError as exc:
+        st.error(exc.message)
         return
     if not docs:
         st.caption("هنوز سندی بارگذاری نشده است.")
@@ -291,7 +346,10 @@ def admin_page() -> None:
         st.warning(f"سند «{pending['filename']}» از پایگاه دانش حذف شود؟")
         yes, no, _ = st.columns([1, 1, 3])
         if yes.button("بله، حذف شود", type="primary"):
-            admin_call("DELETE", f"/admin/documents/{pending['doc_id']}")
+            try:
+                api("DELETE", f"/admin/documents/{pending['doc_id']}")
+            except ApiError as exc:
+                st.error(exc.message)
             st.session_state.pop("confirm_delete", None)
             health.clear()
             st.rerun()
@@ -303,9 +361,12 @@ def admin_page() -> None:
 # ================================================================== app
 st.set_page_config(page_title="دستیار اداری هوشمند", page_icon=":material/account_balance:", layout="centered")
 st.html(f"<style>{CSS}</style>")
-page = st.navigation([
-    st.Page(chat_page, title="گفتگو", icon=":material/chat:", url_path="chat", default=True),
-    st.Page(admin_page, title="مدیریت اسناد", icon=":material/folder_managed:", url_path="admin"),
-])
-sidebar()
-page.run()
+if "token" not in st.session_state:
+    login_page()
+else:
+    page = st.navigation([
+        st.Page(chat_page, title="گفتگو", icon=":material/chat:", url_path="chat", default=True),
+        st.Page(admin_page, title="مدیریت اسناد", icon=":material/folder_managed:", url_path="admin"),
+    ])
+    sidebar()
+    page.run()
