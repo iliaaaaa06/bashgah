@@ -1,34 +1,21 @@
-# دستیار اداری هوشمند (Backend)
+# دستیار اداری هوشمند
 
-بک‌اند FastAPI + RAG برای پاسخ‌گویی به پرسش‌های فارسی بر اساس اسناد سازمان، با جستجوی وب برای پرسش‌هایی که جوابشان در اسناد نیست.
+پاسخ‌گویی به پرسش‌های فارسی: اول از اسناد سازمان، بعد از دانش خود مدل و در نهایت از جستجوی وب.
 
 ## ساختار پروژه
 
 ```
 bashgah/
+├── rag_server.py         # کل بک‌اند: FastAPI، RAG، ChromaDB، مدل زبانی، جستجوی وب، پرامپت‌ها و پیام‌های فارسی
+├── frontend_app.py       # کل رابط کاربری Streamlit (گفتگو + مدیریت اسناد)؛ فقط از طریق HTTP به بک‌اند وصل می‌شود
 ├── .env                  # تنظیمات و آدرس‌ها (در git نیست)
 ├── .env.example          # الگوی تنظیمات
 ├── requirements.txt
 ├── scripts/
-│   ├── start_llm.sh      # راه‌اندازی llama-server (فقط اگر مدل را روی همین سیستم اجرا کنید)
-│   └── start_frontend.sh # راه‌اندازی رابط کاربری Streamlit
-├── frontend/             # رابط کاربری Streamlit — کاملاً جدا از بک‌اند، فقط از طریق HTTP وصل می‌شود
-│   ├── app.py            # نقطه‌ی ورود و ناوبری صفحات
-│   ├── config.py         # BACKEND_URL و تنظیمات فرانت از .env
-│   ├── texts.py          # همه‌ی متن‌های فارسی رابط کاربری
-│   ├── api_client.py     # همه‌ی فراخوانی‌های API بک‌اند
-│   ├── assets/style.css  # راست‌چین، فونت وزیرمتن و ظاهر
-│   ├── ui/chat_page.py   # صفحه‌ی گفتگو (+ اسلایدر دما)
-│   ├── ui/admin_page.py  # صفحه‌ی مدیر: ورود، آپلود، فهرست و حذف اسناد
-│   ├── ui/sidebar.py     # وضعیت سرویس
-│   └── .streamlit/config.toml
-├── app/
-│   ├── main.py           # FastAPI: /chat، /admin/*، خطاهای فارسی، UTF-8
-│   ├── rag_engine.py     # chunking، embedding، ChromaDB، LLM، جستجوی وب
-│   ├── document_loader.py# استخراج متن از PDF / DOCX / TXT
-│   ├── persian.py        # نرمال‌سازی متن فارسی (ی/ک، نیم‌فاصله، اعراب، ...)
-│   ├── prompts.py        # پرامپت‌های سیستمی و همه‌ی پیام‌های فارسی
-│   └── config.py         # خواندن .env
+│   ├── start_all.sh        # بررسی اتصال + اجرای بک‌اند و رابط کاربری
+│   ├── start_frontend.sh   # اجرای رابط کاربری
+│   ├── start_llm.sh        # راه‌اندازی llama-server (فقط اگر مدل را روی همین سیستم اجرا کنید)
+│   └── check_connection.py # بررسی اتصال به سرور مدل
 └── data/                 # ChromaDB و فایل‌های آپلودشده (خودکار ساخته می‌شود)
 ```
 
@@ -46,10 +33,10 @@ UI ──HTTP──► FastAPI (:8000) ──► bge-m3 (embedding, داخل ه�
 - **Stateless بودن temperature:** هر درخواست `/chat` دمای خودش را به llama-server می‌فرستد. llama-server با `-np` چند slot مستقل دارد، پس تنظیمات یک کاربر روی کاربر دیگر اثر نمی‌گذارد.
 
 ### منطق پاسخ‌دهی
-1. همیشه ابتدا جستجو در ChromaDB انجام می‌شود (فقط قطعه‌هایی که شباهتشان بیشتر از `RELEVANCE_THRESHOLD` است).
-2. اگر سند مرتبط بود، مدل فقط از روی اسناد پاسخ می‌دهد. اگر جواب در اسناد نبود، جمله‌ی ثابت «متاسفانه اطلاعات ... موجود نیست» را برمی‌گرداند.
-3. اگر سندی پیدا نشد یا جواب در اسناد نبود، جستجوی وب انجام می‌شود. مدل نتایج را بررسی می‌کند و اگر برای پاسخ کافی بودند، پاسخ را فقط از روی همان نتایج می‌سازد.
-4. اگر نتایج وب هم کافی نبود (یا جستجو نتیجه‌ای نداشت)، جمله‌ی ثابت «متاسفانه نه در فایل‌های من و نه در جستجوی وب ...» برگردانده می‌شود و مدل هیچ حدسی نمی‌زند. با `WEB_SEARCH_ENABLED=false` جستجوی وب انجام نمی‌شود و فقط اسناد بررسی می‌شوند.
+1. **اسناد:** ابتدا در ChromaDB جستجو می‌شود (فقط قطعه‌هایی که شباهتشان بیشتر از `RELEVANCE_THRESHOLD` است). اگر جواب در اسناد بود، همان برگردانده می‌شود و جستجوی وب انجام نمی‌شود.
+2. **دانش مدل:** اگر جواب در اسناد نبود، مدل از دانش خودش پاسخ می‌دهد. برای پرسش‌هایی که به اطلاعات به‌روز نیاز دارند (قیمت، اخبار، بخشنامه‌ی جدید و ...) یا وقتی مطمئن نیست، پاسخ نمی‌دهد و کار به مرحله‌ی بعد می‌رسد.
+3. **جستجوی وب:** مدل از روی نتایج جستجو پاسخ می‌دهد و در انتهای پاسخ فقط لینک منابع نمایش داده می‌شود.
+4. اگر هیچ‌کدام جواب نداشت، جمله‌ی ثابت «متاسفانه نه در فایل‌های من، نه در دانش خودم و نه در جستجوی وب ...» برگردانده می‌شود. با `WEB_SEARCH_ENABLED=false` مرحله‌ی ۳ انجام نمی‌شود.
 
 ## اجرا
 
@@ -60,12 +47,12 @@ UI ──HTTP──► FastAPI (:8000) ──► bge-m3 (embedding, داخل ه�
 ### روی مک (همین سیستم، برای تست)
 ```bash
 brew install llama.cpp
-uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt -r frontend/requirements.txt
+uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
 cp .env.example .env        # ADMIN_API_KEY را عوض کنید
 
 ./scripts/start_llm.sh                       # ترمینال ۱ — بار اول مدل را دانلود می‌کند
-.venv/bin/python -m app.main                 # ترمینال ۲ — API روی :8000
-./scripts/start_frontend.sh                  # ترمینال ۳ — UI روی :8501
+.venv/bin/python rag_server.py              # ترمینال ۲ — API روی :8000
+.venv/bin/python frontend_app.py            # ترمینال ۳ — UI روی :8501
 ```
 
 ### روی سیستم اصلی (RTX 5070، لینوکس یا WSL2)
@@ -77,12 +64,12 @@ export PATH="$PWD/build/bin:$PATH"; cd -
 
 python3.12 -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu128
-.venv/bin/pip install -r requirements.txt -r frontend/requirements.txt
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env        # پیش‌فرض‌های این فایل برای 12GB تنظیم شده‌اند
 
 ./scripts/start_llm.sh
-.venv/bin/python -m app.main
-./scripts/start_frontend.sh
+.venv/bin/python rag_server.py
+.venv/bin/python frontend_app.py
 ```
 در ویندوز بدون WSL می‌توانید باینری آماده‌ی CUDA را از صفحه‌ی Releases پروژه‌ی llama.cpp دانلود کنید و `llama-server.exe` را با همان آرگومان‌های `scripts/start_llm.sh` اجرا کنید.
 
@@ -92,14 +79,7 @@ cp .env.example .env        # پیش‌فرض‌های این فایل برای 
 - `EMBEDDING_BASE_URL`: آدرس endpoint سازگار با OpenAI (`/v1/embeddings`)، با `EMBEDDING_MODEL` برابر نام مدل روی همان سرور
 - یا `EMBEDDING_BASE_URL` خالی و `EMBEDDING_MODEL` برابر مسیر پوشه‌ی مدل روی دیسک
 
-### نسخه‌ی تک‌فایلی
-`rag_server.py` (کل `app/`) و `frontend_app.py` (کل `frontend/`) نسخه‌ی یک‌فایلی همین کد هستند و برای تحویل دادن پروژه به شکل دو فایل ساخته شده‌اند. هر کدام `.env` را از کنار خودش می‌خواند:
-```bash
-.venv/bin/python rag_server.py      # API روی :8000
-.venv/bin/python frontend_app.py    # UI روی :8501
-```
-این دو فایل خودکار ساخته می‌شوند و نباید دستی ویرایش شوند. کد اصلی همان `app/` و `frontend/` است. بعد از هر تغییر در آن‌ها، این دستور را دوباره اجرا کنید:
-`.venv/bin/python scripts/build_standalone.py`
+هر دو فایل `.env` را از کنار خودشان می‌خوانند. اگر سیستم چند IP دارد و Streamlit آدرس اشتباهی به‌عنوان «Network URL» چاپ می‌کند، `FRONTEND_PUBLIC_HOST` را در `.env` تنظیم کنید.
 
 ## رابط کاربری و API
 

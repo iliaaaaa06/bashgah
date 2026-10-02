@@ -8,7 +8,7 @@ set -a; [ -f .env ] && source .env; set +a
 .venv/bin/python scripts/check_connection.py || { echo; echo "اتصال به سرور مدل برقرار نیست؛ ابتدا .env را اصلاح کنید."; exit 1; }
 
 echo; echo "راه‌اندازی بک‌اند…"
-.venv/bin/python -m app.main &
+.venv/bin/python rag_server.py &
 BACKEND_PID=$!
 trap 'kill $BACKEND_PID 2>/dev/null' EXIT INT TERM
 

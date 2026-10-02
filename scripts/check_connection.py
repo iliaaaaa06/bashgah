@@ -9,13 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from openai import OpenAI  # noqa: E402
 
-from app.config import get_settings  # noqa: E402
+from rag_server import settings  # noqa: E402
 
 OK, FAIL = "✅", "❌"
 
 
 def main() -> int:
-    s = get_settings()
+    s = settings
     if "SERVER_IP_HERE" in s.llm_base_url:
         print(f"{FAIL} هنوز IP سرور را در .env وارد نکرده‌اید (MODEL_SERVER_IP).")
         return 1
