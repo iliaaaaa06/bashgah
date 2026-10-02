@@ -92,6 +92,15 @@ cp .env.example .env        # پیش‌فرض‌های این فایل برای 
 - `EMBEDDING_BASE_URL`: آدرس endpoint سازگار با OpenAI (`/v1/embeddings`)، با `EMBEDDING_MODEL` برابر نام مدل روی همان سرور
 - یا `EMBEDDING_BASE_URL` خالی و `EMBEDDING_MODEL` برابر مسیر پوشه‌ی مدل روی دیسک
 
+### نسخه‌ی تک‌فایلی
+`rag_server.py` (کل `app/`) و `frontend_app.py` (کل `frontend/`) نسخه‌ی یک‌فایلی همین کد هستند و برای تحویل دادن پروژه به شکل دو فایل ساخته شده‌اند. هر کدام `.env` را از کنار خودش می‌خواند:
+```bash
+.venv/bin/python rag_server.py      # API روی :8000
+.venv/bin/python frontend_app.py    # UI روی :8501
+```
+این دو فایل خودکار ساخته می‌شوند و نباید دستی ویرایش شوند. کد اصلی همان `app/` و `frontend/` است. بعد از هر تغییر در آن‌ها، این دستور را دوباره اجرا کنید:
+`.venv/bin/python scripts/build_standalone.py`
+
 ## رابط کاربری و API
 
 رابط کاربری (Streamlit): `http://localhost:8501/`. صفحه‌ی «گفتگو» برای کاربران است و صفحه‌ی «مدیریت اسناد» با کلید مدیر باز می‌شود. اگر فرانت روی سیستم دیگری اجرا می‌شود، `BACKEND_URL` را در `.env` تنظیم کنید.
