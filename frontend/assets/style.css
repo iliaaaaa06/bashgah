@@ -1,0 +1,67 @@
+/* RTL + Persian font for the Streamlit UI. Edit freely — loaded on every page by ui/style.py */
+@import url("https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700&display=swap");
+
+:root {
+  --fa-font: "Vazirmatn", Tahoma, "Segoe UI", sans-serif;
+}
+
+/* Font: set on containers only, so Streamlit's icon font keeps working */
+.stApp, .stMarkdown, .stChatMessage, .stAlert, button, input, textarea, label,
+h1, h2, h3, h4, [data-testid="stCaptionContainer"], [data-testid="stSidebarNav"] {
+  font-family: var(--fa-font) !important;
+}
+
+/* Right-to-left text */
+.stMarkdown, .stChatMessage, .stAlert, label, h1, h2, h3, h4,
+[data-testid="stCaptionContainer"], [data-testid="stExpander"], [data-testid="stSidebar"],
+[data-testid="stFileUploader"], [data-testid="stForm"] {
+  direction: rtl;
+  text-align: right;
+}
+textarea, input[type="text"] {
+  direction: rtl;
+  text-align: right;
+}
+/* The admin key is Latin — keep it LTR */
+input[type="password"] {
+  direction: ltr;
+  text-align: left;
+}
+
+/* Chat */
+.stChatMessage {
+  line-height: 1.9;
+}
+.stChatMessage ul, .stChatMessage ol {
+  padding-right: 1.4rem;
+  padding-left: 0;
+}
+.source-item {
+  background: rgba(127, 127, 127, .08);
+  border-radius: 8px;
+  padding: .45rem .7rem;
+  margin-bottom: .45rem;
+  font-size: .9rem;
+}
+.source-item .snippet {
+  opacity: .75;
+  font-size: .82rem;
+  margin-top: .15rem;
+}
+.source-item a {
+  direction: ltr;
+  unicode-bidi: embed;
+  word-break: break-all;
+}
+
+/* Status dot in sidebar */
+.status-dot {
+  display: inline-block;
+  width: .6rem;
+  height: .6rem;
+  border-radius: 50%;
+  margin-left: .4rem;
+}
+.status-dot.ok { background: #1a8a4a; }
+.status-dot.warn { background: #d69e2e; }
+.status-dot.err { background: #c53030; }
